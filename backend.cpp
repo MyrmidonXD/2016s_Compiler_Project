@@ -308,35 +308,179 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
   switch (op) {
     // binary operators
     // dst = src1 op src2
-    // TODO
+    case opAdd:
+      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(2), "%edx", "");
+      EmitInstruction("addl", "%edx, %eax", "");
+      Store(i->GetDest(), 'a', "");
+      break;
+    case opSub:
+      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(2), "%edx", "");
+      EmitInstruction("subl", "%edx, %eax", "");
+      Store(i->GetDest(), 'a', "");
+      break;
+    case opMul:
+      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(2), "%edx", "");
+      EmitInstruction("imull", "%edx", "");
+      Store(i->GetDest(), 'a', "");
+      break;
+    case opDiv:
+      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(2), "%edx", "");
+      EmitInstruction("idivl", "%edx", "");
+      Store(i->GetDest(), 'a', "");
+      break;
+    case opAnd:
+      Load(i->GetSrc(1), "%al", "");
+      Load(i->GetSrc(2), "%dl", "");
+      EmitInstruction("andb", "%dl, %al", "");
+      Store(i->GetDest(), 'a', "");
+      break;
+    case opOr:
+      Load(i->GetSrc(1), "%al", "");
+      Load(i->GetSrc(2), "%dl", "");
+      EmitInstruction("orb", "%dl, %al", "");
+      Store(i->GetDest(), 'a', "");
+      break;
     // unary operators
     // dst = op src1
-    // TODO
+    case opNeg:
+      Load(i->GetSrc(1), "%edx", "");
+      EmitInstruction("negl", "%edx", "");
+      Store(i->GetDest(), 'd', "");
+      break;
+    case opPos:
+      break; // opPos doesn't need any instruction.
+    case opNot:
+      Load(i->GetSrc(1), "%dl", "");
+      EmitInstruction("notb", "%dl", "");
+      Store(i->GetDest(), 'd', "");
+      break;
 
     // memory operations
     // dst = src1
-    // TODO
+    case opAssign:
+      Load(i->GetSrc(1), "%eax", "");
+      Store(i->GetDest(), 'a', "");
+      break;
 
     // pointer operations
     // dst = &src1
-    // TODO
+    case opAddress:
+      {
+        assert(i->GetSrc(1));
+        const CTacName *_src_var = dynamic_cast<const CTacName*>(i->GetSrc(1));
+        assert(_src_var != NULL);
+
+        const CSymbol *src_sym = _src_var->GetSymbol();
+        if(src_sym->GetSymbolType() == stGlobal)
+        {
+          EmitInstruction("movl", "$"+src_sym->GetName()+", %edx", "");
+          Store(i->GetDest(), 'd', "");
+        }
+        else
+        {
+          stringstream s_stream;
+          string baseReg, offsetImm;
+
+          s_stream << "$"  << src_sym->GetOffset();
+          offsetImm = s_stream.str();
+          baseReg = src_sym->GetBaseRegister();
+          
+          EmitInstruction("movl", "%" + baseReg + ", %edx", ""); // ex) movl %ebp, %edx
+          EmitInstruction("addl", offsetImm + ", %edx", "");     // ex) addl $8, %edx
+          Store(i->GetDest(), 'd', "");
+        }
+        break;
+      }
     // dst = *src1
     case opDeref:
       // opDeref not generated for now
       EmitInstruction("# opDeref", "not implemented", cmt.str());
       break;
 
-
     // unconditional branching
     // goto dst
-    // TODO
+    case opGoto:
+      {
+        const CTacLabel *goto_lbl = dynamic_cast<const CTacLabel*>(i->GetDest());
+        assert(goto_lbl != NULL);
+
+        EmitInstruction("jmp", Label(goto_lbl), "");
+        break;
+      }
 
     // conditional branching
     // if src1 relOp src2 then goto dst
-    // TODO
+    case opEqual:
+    case opNotEqual:
+    case opLessThan:
+    case opLessEqual:
+    case opBiggerThan:
+    case opBiggerEqual:
+      if(OperandSize(i->GetSrc(1)) == 4)
+      {
+        Load(i->GetSrc(1), "%edx", "");
+        Load(i->GetSrc(2), "%eax", "");
+        EmitInstruction("cmpl", "%eax, %edx", "");
+      }
+      else if (OperandSize(i->GetSrc(1)) == 1)
+      {
+        Load(i->GetSrc(1), "%dl", "");
+        Load(i->GetSrc(2), "%al", "");
+        EmitInstruction("cmpb", "%al, %dl", "");
+      }
+      else // OperandSize(src) == 2
+      {
+        Load(i->GetSrc(1), "%dx", "");
+        Load(i->GetSrc(2), "%ax", "");
+        EmitInstruction("cmpw", "%ax, %dx", "");
+      }
+      
+      { // Emit conditional jump instrction
+        CTacLabel *dst_lbl = dynamic_cast<CTacLabel*>(i->GetDest());
+        assert(dst_lbl != NULL);
+
+        EmitInstruction(Condition(op), Label(dst_lbl), "");
+        break;
+      }
 
     // function call-related operations
     // TODO
+    case opParam:
+      if(OperandSize(i->GetSrc(1)) == 4)
+      {
+        Load(i->GetSrc(1), "%edx", "");
+        EmitInstruction("pushl", "%edx", "");
+      }
+      else if(OperandSize(i->GetSrc(1)) == 1)
+      {
+        Load(i->GetSrc(1), "%dl", "");
+        EmitInstruction("pushb", "%dl", "");
+      }
+      else
+      {
+        Load(i->GetSrc(1), "%dx", "");
+        EmitInstruction("pushw", "%dx", "");
+      }
+      break;
+    case opCall:
+      {
+        const CTacLabel* func_lbl = dynamic_cast<const CTacLabel*>(i->GetSrc(1));
+        assert(func_lbl != NULL);
+
+        EmitInstruction("call", Label(func_lbl), "");
+        if(i->GetDest() != NULL)
+          Store(i->GetDest(), 'a', "");
+      }
+      break;
+    case opReturn:
+      if(i->GetSrc(1) != NULL)
+        Load(i->GetSrc(1), "%eax", "");
+      EmitInstruction("jmp", Label("exit"), "");
+      break;
 
     // special
     case opLabel:
@@ -404,10 +548,47 @@ string CBackendx86::Operand(const CTac *op)
 {
   string operand;
 
-  // TODO
   // return a string representing op
   // hint: take special care of references (op of type CTacReference)
 
+  const CTacConst *constant = dynamic_cast<const CTacConst*>(op);
+  if(constant != NULL)
+  {
+    operand = Imm(constant->GetValue());
+    return operand;
+  }
+
+  const CTacName *variable = dynamic_cast<const CTacName*>(op);
+  assert(variable != NULL);
+
+  // Reference handling
+  // Get the symbol's value and put that to operand (memory address)
+  const CTacReference *ref_var = dynamic_cast<const CTacReference*>(variable);
+  if(ref_var != NULL)
+  {
+    const CSymbol *sym = ref_var->GetSymbol();
+    CTacName *derefed_var = new CTacName(sym);
+    
+    operand = "%ebx";
+    Load(derefed_var, operand, "Load address of the reference, to ebx");
+    return operand;
+  }
+
+  // Non-reference handling
+  const CSymbol *sym = variable->GetSymbol();
+  if(sym->GetSymbolType() == stGlobal)
+  {
+    operand = sym->GetName();
+  }
+  else 
+  {
+    stringstream s_stream;
+
+    s_stream << sym->GetOffset();
+    s_stream << "(" << "%" << sym->GetBaseRegister() << ")"; // ex) 12(%ebp)
+    
+    operand = s_stream.str();
+  }
   return operand;
 }
 

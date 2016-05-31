@@ -729,7 +729,7 @@ void CParser::varDeclSequence(CAstScope *s, CSymProc *symproc, bool fp)
       }
       else // symbol creation for varDeclaration
       {
-                CSymbol *symbol = s->CreateVar(it->GetValue(), varType);
+        CSymbol *symbol = s->CreateVar(it->GetValue(), varType);
         bool result = st->AddSymbol(symbol);
         if(!result) SetError((*it), "duplicated variable declaration in this scope");
       }

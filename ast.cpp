@@ -2034,7 +2034,7 @@ CTacAddr* CAstArrayDesignator::ToTac(CCodeBlock *cb)
   result = new CAstBinaryOp(dummy, opAdd, array_addr, result);
 
   // Call ToTac and return result!
-  return new CTacReference(dynamic_cast<CTacName*>(result->ToTac(cb))->GetSymbol());
+  return new CTacReference(dynamic_cast<CTacName*>(result->ToTac(cb))->GetSymbol(), _symbol);
 }
 
 CTacAddr* CAstArrayDesignator::ToTac(CCodeBlock *cb,
@@ -2267,13 +2267,13 @@ string CAstStringConstant::dotAttr(void) const
 
 CTacAddr* CAstStringConstant::ToTac(CCodeBlock *cb)
 {
-  return new CTacReference(_sym);
+  return new CTacName(_sym);
 }
 
 CTacAddr* CAstStringConstant::ToTac(CCodeBlock *cb,
                                 CTacLabel *ltrue, CTacLabel *lfalse)
 {
-  return new CTacReference(_sym);
+  return new CTacName(_sym);
 }
 
 
