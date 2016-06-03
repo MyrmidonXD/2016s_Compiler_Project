@@ -36,6 +36,7 @@
 #include <sstream>
 #include <iomanip>
 #include <cassert>
+#include <cstdlib>
 
 #include "backend.h"
 using namespace std;
@@ -188,7 +189,6 @@ void CBackendx86::EmitScope(CScope *scope)
   _out << _ind << "# scope " << scope->GetName() << endl
        << label << ":" << endl;
 
-  // TODO
   // ComputeStackOffsets(scope)
   //
   // emit function prologue
@@ -197,6 +197,33 @@ void CBackendx86::EmitScope(CScope *scope)
   //   EmitInstruction(i)
   //
   // emit function epilogue
+  
+  int stack_size = ComputeStackOffsets(scope->GetSymbolTable(), 8, -16); // TODO validify offsets
+  ostringstream o;
+  o << stack_size;
+
+  // Emit Func Prologue
+  EmitInstruction("pushl", "%ebp", "");                   // 1. saving ebp by pushing it onto the stack
+  EmitInstruction("movl", "%esp, %ebp", "");              // 2. set ebp to esp
+  EmitInstruction("pushl", "%ebx", "");                   // 3. save callee-saved registers
+  EmitInstruction("pushl", "%esi", "");
+  EmitInstruction("pushl", "%edi", "");
+  EmitInstruction("subl", "$" + o.str() + ", %esp", "");  // 4. Generate space on the stack for locals and
+                                                          //    spilled variables by adjusting the stack pointer.
+
+  const CCodeBlock *cb = scope->GetCodeBlock();
+  const list<CTacInstr*> ilist = cb->GetInstr();
+  for(list<CTacInstr*>::const_iterator it = ilist.begin(); it != ilist.end(); it++)
+    EmitInstruction((*it));
+
+  // Emit Func Epilogue
+  EmitInstruction(new CTacLabel(Label("exit")));
+  EmitInstruction("addl", "$" + o.str() + ", %esp", "");  // 1. Remove space on stack for locals and spilled variables
+  EmitInstruction("popl", "%edi", "");                    // 2. Restore callee-saved registers
+  EmitInstruction("popl", "%esi", "");
+  EmitInstruction("popl", "%ebx", "");
+  EmitInstruction("popl", "%ebp", "");                    // 3. Restore ebp
+  EmitInstruction("ret", "", "");                         // 4. Issue the ret instruction
 
   _out << endl;
 }
@@ -322,14 +349,15 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
       break;
     case opMul:
       Load(i->GetSrc(1), "%eax", "");
-      Load(i->GetSrc(2), "%edx", "");
-      EmitInstruction("imull", "%edx", "");
+      Load(i->GetSrc(2), "%ebx", "");
+      EmitInstruction("imull", "%ebx", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opDiv:
       Load(i->GetSrc(1), "%eax", "");
-      Load(i->GetSrc(2), "%edx", "");
-      EmitInstruction("idivl", "%edx", "");
+      Load(i->GetSrc(2), "%ebx", "");
+      EmitInstruction("cdq"); // sign-extend for dividend
+      EmitInstruction("idivl", "%ebx", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opAnd:
@@ -448,7 +476,6 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
       }
 
     // function call-related operations
-    // TODO
     case opParam:
       if(OperandSize(i->GetSrc(1)) == 4)
       {
@@ -635,11 +662,32 @@ int CBackendx86::OperandSize(CTac *t) const
 {
   int size = 4;
 
-  // TODO
   // compute the size for operand t of type CTacName
   // Hint: you need to take special care of references (incl. references to pointers!)
   //       and arrays. Compare your output to that of the reference implementation
   //       if you are not sure.
+ 
+  const CTacReference *ref_operand = dynamic_cast<const CTacReference*>(t);
+  if(ref_operand != NULL)
+  {
+    const CSymbol *deref_sym = ref_operand->GetDerefSymbol();
+
+    if(deref_sym->GetDataType()->IsArray())
+      size = 4;
+    else
+      size = deref_sym->GetDataType()->GetSize();
+  }
+  else
+  {
+    const CTacName *name_operand = dynamic_cast<const CTacName*>(t);
+    assert(name_operand != NULL);
+
+    const CSymbol *sym = name_operand->GetSymbol();
+    if(sym->GetDataType()->IsArray())
+      size = 4;
+    else
+      size = sym->GetDataType()->GetSize();
+  }
 
   return size;
 }
@@ -650,7 +698,13 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
   assert(symtab != NULL);
   vector<CSymbol*> slist = symtab->GetSymbols();
 
-  // TODO
+  int size = 0;
+  int param_cnt = 0;
+  int prev_local_ofs = local_ofs; // offset of last symbol processed.
+
+  assert(local_ofs < 0);
+  assert(param_ofs > 0);
+
   // foreach local symbol l in slist do
   //   compute aligned offset on stack and store in symbol l
   //   set base register to %ebp
@@ -662,6 +716,48 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
   // align size
   //
   // dump stack frame to assembly file
+
+  for(vector<CSymbol*>::const_iterator it = slist.begin(); it != slist.end(); it++)
+  {
+    if((*it)->GetSymbolType() == stParam) // parameter handling
+    {
+      CSymParam *curr_param = dynamic_cast<CSymParam*>((*it));
+      assert(curr_param != NULL);
+
+      curr_param->SetOffset(param_ofs + 4 * curr_param->GetIndex()); // Every i-th arguments located in '%ebp + (param_ofs + 4*i)'
+      curr_param->SetBaseRegister("ebp");
+
+      param_cnt++;
+    }
+    else if((*it)->GetSymbolType() == stLocal) // local symbol handling
+    {
+      int align = (*it)->GetDataType()->GetAlign();
+      
+      if(abs(local_ofs) % align != 0)
+      {
+        local_ofs -= align + (local_ofs % align); // decrese local_ofs by padding size (for alignment)
+        // Note: remainder of negative number gives the negated remainder of its absolute value.
+        // ex) (-19) % 4 = -3. (=> 4 + ((-19) % 4) = 1)
+      }
+
+      (*it)->SetOffset(local_ofs);
+      (*it)->SetBaseRegister("ebp");
+
+      local_ofs -= (*it)->GetDataType()->GetSize(); // local_ofs always point the 'exclusive' lower boundary of current stack frame.
+    }
+  }
+
+  _out << _ind << "# " << "stack offsets:" << endl;
+  for(vector<CSymbol*>::const_iterator it = slist.begin(); it != slist.end(); it++)
+  {
+    _out << _ind << "# " << right << setw(6) << (*it)->GetOffset()
+                         << "(%" << (*it)->GetBaseRegister() << ")"
+                         << setw(4) << (*it)->GetDataType()->GetDataSize();
+    (*it)->print(_out, 1);
+    _out << endl;
+  }
+  
+  size = -local_ofs;
 
   return size;
 }
