@@ -206,9 +206,11 @@ void CBackendx86::EmitScope(CScope *scope)
   //
   // emit function epilogue
   
-  int stack_size = ComputeStackOffsets(scope->GetSymbolTable(), 8, -16); // TODO validify offsets
+  SetScope(scope);
+  
+  int stack_size = ComputeStackOffsets(scope->GetSymbolTable(), 8, -16);
   ostringstream o;
-  o << stack_size;
+  o << stack_size - 12;
 
   // Emit Func Prologue
   EmitInstruction("pushl", "%ebp", "");                   // 1. saving ebp by pushing it onto the stack
@@ -226,7 +228,7 @@ void CBackendx86::EmitScope(CScope *scope)
     EmitInstruction((*it));
 
   // Emit Func Epilogue
-  EmitInstruction(new CTacLabel(Label("exit")));
+  EmitInstruction(new CTacLabel("exit"));
   EmitInstruction("addl", "$" + o.str() + ", %esp", "");  // 1. Remove space on stack for locals and spilled variables
   EmitInstruction("popl", "%edi", "");                    // 2. Restore callee-saved registers
   EmitInstruction("popl", "%esi", "");
@@ -324,40 +326,43 @@ void CBackendx86::EmitLocalData(CScope *scope)
 
   for(vector<CSymbol*>::const_iterator it = slist.begin(); it != slist.end(); it++)
   {
-    const CType *t = (*it)->GetDataType();
-    assert(t != NULL);
-    if(t->IsArray())
+    if((*it)->GetSymbolType() == stLocal)
     {
-      const CArrayType *at = dynamic_cast<const CArrayType*>(t);
-      assert(at != NULL);
-
-      string baseReg = (*it)->GetBaseRegister();
-      int ofs = (*it)->GetOffset();
-      int dim = at->GetNDim();
-
-      ostringstream o1, o2;
-      o1 << ofs;
-      string s_ofs = o1.str();
-
-      o2 << dim;
-      string s_dim = o2.str();
-
-      EmitInstruction("movl", "$"+s_dim+", "+s_ofs+"(%"+baseReg+")", "");
-
-      for (int d=0; d<dim; d++) 
+      const CType *t = (*it)->GetDataType();
+      assert(t != NULL);
+      if(t->IsArray())
       {
+        const CArrayType *at = dynamic_cast<const CArrayType*>(t);
         assert(at != NULL);
-        ofs += 4;
 
-        ostringstream o, o3;
-        o << at->GetNElem();
-        o3 << ofs;
-        string s_nelem = o.str();
-        s_ofs = o3.str();
-        
-        EmitInstruction("movl", "$"+s_nelem+", "+s_ofs+"(%"+baseReg+")", "");
+        string baseReg = (*it)->GetBaseRegister();
+        int ofs = (*it)->GetOffset();
+        int dim = at->GetNDim();
 
-        at = dynamic_cast<const CArrayType*>(at->GetInnerType());
+        ostringstream o1, o2;
+        o1 << ofs;
+        string s_ofs = o1.str();
+
+        o2 << dim;
+        string s_dim = o2.str();
+
+        EmitInstruction("movl", "$"+s_dim+", "+s_ofs+"(%"+baseReg+")", "");
+
+        for (int d=0; d<dim; d++) 
+        {
+          assert(at != NULL);
+          ofs += 4;
+
+          ostringstream o, o3;
+          o << at->GetNElem();
+          o3 << ofs;
+          string s_nelem = o.str();
+          s_ofs = o3.str();
+          
+          EmitInstruction("movl", "$"+s_nelem+", "+s_ofs+"(%"+baseReg+")", "");
+
+          at = dynamic_cast<const CArrayType*>(at->GetInnerType());
+        }
       }
     }
   }
@@ -524,7 +529,7 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
         CTacLabel *dst_lbl = dynamic_cast<CTacLabel*>(i->GetDest());
         assert(dst_lbl != NULL);
 
-        EmitInstruction(Condition(op), Label(dst_lbl), "");
+        EmitInstruction("j"+Condition(op), Label(dst_lbl), "");
         break;
       }
 
@@ -551,7 +556,7 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
         const CTacName* func_name = dynamic_cast<const CTacName*>(i->GetSrc(1));
         assert(func_name != NULL);
 
-        EmitInstruction("call", Label(func_name->GetSymbol()->GetName()), "");
+        EmitInstruction("call", func_name->GetSymbol()->GetName(), "");
         if(i->GetDest() != NULL)
           Store(i->GetDest(), 'a', "");
       }
@@ -804,21 +809,24 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
       (*it)->SetOffset(local_ofs);
       (*it)->SetBaseRegister("ebp");
 
-      local_ofs -= (*it)->GetDataType()->GetSize(); // local_ofs always point the 'exclusive' lower boundary of current stack frame.
-    }
+      prev_local_ofs = local_ofs;
+      local_ofs -= (*it)->GetDataType()->GetSize(); // local_ofs always point the address that the next local variables locates.
+    } 
   }
 
   _out << _ind << "# " << "stack offsets:" << endl;
   for(vector<CSymbol*>::const_iterator it = slist.begin(); it != slist.end(); it++)
   {
-    _out << _ind << "# " << right << setw(6) << (*it)->GetOffset()
-                         << "(%" << (*it)->GetBaseRegister() << ")"
-                         << setw(4) << (*it)->GetDataType()->GetDataSize();
-    (*it)->print(_out, 1);
-    _out << endl;
+    if((*it)->GetSymbolType() == stParam || (*it)->GetSymbolType() == stLocal)
+    {
+      _out << _ind << "# " << right << setw(6) << (*it)->GetOffset()
+                           << "(%" << (*it)->GetBaseRegister() << ")"
+                           << setw(4) << (*it)->GetDataType()->GetDataSize();
+      (*it)->print(_out, 1);
+      _out << endl;
+    }
   }
   
-  size = -local_ofs;
-
+  size = -prev_local_ofs;
   return size;
 }
