@@ -134,10 +134,18 @@ void CBackendx86::EmitCode(void)
        << _ind << ".extern WriteLn" << endl
        << endl;
 
-  // TODO
   // forall s in subscopes do
   //   EmitScope(s)
   // EmitScope(program)
+  
+  SetScope(_m);
+  CScope *curr_scope = GetScope();
+  const vector<CScope*> &subscope_list = curr_scope->GetSubscopes();
+
+  if(subscope_list.size() != 0)
+    for(vector<CScope*>::const_iterator it = subscope_list.begin(); it != subscope_list.end(); it++)
+      EmitScope((*it));
+  EmitScope(curr_scope);
 
   _out << _ind << "# end of text section" << endl
        << _ind << "#-----------------------------------------" << endl
@@ -210,6 +218,7 @@ void CBackendx86::EmitScope(CScope *scope)
   EmitInstruction("pushl", "%edi", "");
   EmitInstruction("subl", "$" + o.str() + ", %esp", "");  // 4. Generate space on the stack for locals and
                                                           //    spilled variables by adjusting the stack pointer.
+  EmitLocalData(scope);                                   // 5. Emit Local Data to be initialized.
 
   const CCodeBlock *cb = scope->GetCodeBlock();
   const list<CTacInstr*> ilist = cb->GetInstr();
@@ -309,7 +318,51 @@ void CBackendx86::EmitLocalData(CScope *scope)
 {
   assert(scope != NULL);
 
-  // TODO TODO!
+  CSymtab *st = scope->GetSymbolTable();
+  assert(st != NULL);
+  vector<CSymbol*> slist = st->GetSymbols();
+
+  for(vector<CSymbol*>::const_iterator it = slist.begin(); it != slist.end(); it++)
+  {
+    const CType *t = (*it)->GetDataType();
+    assert(t != NULL);
+    if(t->IsArray())
+    {
+      const CArrayType *at = dynamic_cast<const CArrayType*>(t);
+      assert(at != NULL);
+
+      string baseReg = (*it)->GetBaseRegister();
+      int ofs = (*it)->GetOffset();
+      int dim = at->GetNDim();
+
+      ostringstream o1, o2;
+      o1 << ofs;
+      string s_ofs = o1.str();
+
+      o2 << dim;
+      string s_dim = o2.str();
+
+      EmitInstruction("movl", "$"+s_dim+", "+s_ofs+"(%"+baseReg+")", "");
+
+      for (int d=0; d<dim; d++) 
+      {
+        assert(at != NULL);
+        ofs += 4;
+
+        ostringstream o, o3;
+        o << at->GetNElem();
+        o3 << ofs;
+        string s_nelem = o.str();
+        s_ofs = o3.str();
+        
+        EmitInstruction("movl", "$"+s_nelem+", "+s_ofs+"(%"+baseReg+")", "");
+
+        at = dynamic_cast<const CArrayType*>(at->GetInnerType());
+      }
+    }
+  }
+
+
 }
 
 void CBackendx86::EmitCodeBlock(CCodeBlock *cb)
@@ -495,10 +548,10 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
       break;
     case opCall:
       {
-        const CTacLabel* func_lbl = dynamic_cast<const CTacLabel*>(i->GetSrc(1));
-        assert(func_lbl != NULL);
+        const CTacName* func_name = dynamic_cast<const CTacName*>(i->GetSrc(1));
+        assert(func_name != NULL);
 
-        EmitInstruction("call", Label(func_lbl), "");
+        EmitInstruction("call", Label(func_name->GetSymbol()->GetName()), "");
         if(i->GetDest() != NULL)
           Store(i->GetDest(), 'a', "");
       }
@@ -680,13 +733,21 @@ int CBackendx86::OperandSize(CTac *t) const
   else
   {
     const CTacName *name_operand = dynamic_cast<const CTacName*>(t);
-    assert(name_operand != NULL);
+    if(name_operand == NULL)
+    {
+      const CTacConst *const_operand = dynamic_cast<const CTacConst*>(t);
+      assert(const_operand != NULL);
 
-    const CSymbol *sym = name_operand->GetSymbol();
-    if(sym->GetDataType()->IsArray())
-      size = 4;
+      size = 4; // We cannot determine the type of CTacConst.
+    }
     else
-      size = sym->GetDataType()->GetSize();
+    {
+      const CSymbol *sym = name_operand->GetSymbol();
+      if(sym->GetDataType()->IsArray())
+        size = 4;
+      else
+        size = sym->GetDataType()->GetSize();
+    }
   }
 
   return size;
