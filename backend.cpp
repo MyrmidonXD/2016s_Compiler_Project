@@ -208,19 +208,50 @@ void CBackendx86::EmitScope(CScope *scope)
   
   SetScope(scope);
   
-  int stack_size = ComputeStackOffsets(scope->GetSymbolTable(), 8, -16);
+  int stack_size = ComputeStackOffsets(scope->GetSymbolTable(), 8, -12);
   ostringstream o;
-  o << stack_size - 12;
+  o << ((stack_size - 12 + 3) / 4) * 4;
 
   // Emit Func Prologue
-  EmitInstruction("pushl", "%ebp", "");                   // 1. saving ebp by pushing it onto the stack
-  EmitInstruction("movl", "%esp, %ebp", "");              // 2. set ebp to esp
-  EmitInstruction("pushl", "%ebx", "");                   // 3. save callee-saved registers
+  _out << endl;
+  _out << _ind << "# prologue" << endl;
+
+  EmitInstruction("pushl", "%ebp", "");                             // 1. saving ebp by pushing it onto the stack
+  EmitInstruction("movl", "%esp, %ebp", "");                        // 2. set ebp to esp
+  EmitInstruction("pushl", "%ebx", "save callee saved registers");  // 3. save callee-saved registers
   EmitInstruction("pushl", "%esi", "");
   EmitInstruction("pushl", "%edi", "");
-  EmitInstruction("subl", "$" + o.str() + ", %esp", "");  // 4. Generate space on the stack for locals and
-                                                          //    spilled variables by adjusting the stack pointer.
-  EmitLocalData(scope);                                   // 5. Emit Local Data to be initialized.
+  EmitInstruction("subl", "$" + o.str() + ", %esp", "make room for locals");  // 4. Generate space on the stack for locals and
+                                                                              //    spilled variables by adjusting the stack pointer.
+  _out << endl;
+  if(stack_size > 24)                                                         // 5. Memset local stack area to zero
+  {
+    int stack_num = (stack_size - 12 + 3) / 4;
+
+    EmitInstruction("cld", "", "memset local stack area to 0");
+    EmitInstruction("xorl", "%eax, %eax", "");
+    EmitInstruction("movl", Imm(stack_num)+", %ecx", "");
+    EmitInstruction("movl", "%esp, %edi", "");
+    EmitInstruction("rep", "stosl", "");
+  }
+  else
+  {
+    int stack_num = (stack_size - 12 + 3) / 4;
+
+    EmitInstruction("xorl", "%eax, %eax", "memset local stack area to 0");
+    for(int i = stack_num-1; i >= 0; i--)
+    {
+      ostringstream s_ofs;
+      s_ofs << 4 * i;
+
+      EmitInstruction("movl", "%eax, "+s_ofs.str()+"(%esp)", "");
+    }
+  }
+
+  EmitLocalData(scope);                                                       // 6. Emit Local Data to be initialized.
+
+  _out << endl;
+  _out << _ind << "# function body" << endl;
 
   const CCodeBlock *cb = scope->GetCodeBlock();
   const list<CTacInstr*> ilist = cb->GetInstr();
@@ -228,8 +259,10 @@ void CBackendx86::EmitScope(CScope *scope)
     EmitInstruction((*it));
 
   // Emit Func Epilogue
+  _out << endl;
   EmitInstruction(new CTacLabel("exit"));
-  EmitInstruction("addl", "$" + o.str() + ", %esp", "");  // 1. Remove space on stack for locals and spilled variables
+  _out << _ind << "# epilogue" << endl;
+  EmitInstruction("addl", "$" + o.str() + ", %esp", "remove locals");  // 1. Remove space on stack for locals and spilled variables
   EmitInstruction("popl", "%edi", "");                    // 2. Restore callee-saved registers
   EmitInstruction("popl", "%esi", "");
   EmitInstruction("popl", "%ebx", "");
@@ -339,27 +372,22 @@ void CBackendx86::EmitLocalData(CScope *scope)
         int ofs = (*it)->GetOffset();
         int dim = at->GetNDim();
 
-        ostringstream o1, o2;
+        ostringstream o1;
         o1 << ofs;
         string s_ofs = o1.str();
 
-        o2 << dim;
-        string s_dim = o2.str();
-
-        EmitInstruction("movl", "$"+s_dim+", "+s_ofs+"(%"+baseReg+")", "");
+        EmitInstruction("movl", Imm(dim)+", "+s_ofs+"("+baseReg+")", "Initialize meta data of "+(*it)->GetName());
 
         for (int d=0; d<dim; d++) 
         {
           assert(at != NULL);
           ofs += 4;
 
-          ostringstream o, o3;
-          o << at->GetNElem();
+          ostringstream o3;
           o3 << ofs;
-          string s_nelem = o.str();
           s_ofs = o3.str();
           
-          EmitInstruction("movl", "$"+s_nelem+", "+s_ofs+"(%"+baseReg+")", "");
+          EmitInstruction("movl", Imm(at->GetNElem())+", "+s_ofs+"(%"+baseReg+")", "");
 
           at = dynamic_cast<const CArrayType*>(at->GetInnerType());
         }
@@ -394,61 +422,61 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     // binary operators
     // dst = src1 op src2
     case opAdd:
-      Load(i->GetSrc(1), "%eax", "");
-      Load(i->GetSrc(2), "%edx", "");
-      EmitInstruction("addl", "%edx, %eax", "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
+      Load(i->GetSrc(2), "%ebx", "");
+      EmitInstruction("addl", "%ebx, %eax", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opSub:
-      Load(i->GetSrc(1), "%eax", "");
-      Load(i->GetSrc(2), "%edx", "");
-      EmitInstruction("subl", "%edx, %eax", "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
+      Load(i->GetSrc(2), "%ebx", "");
+      EmitInstruction("subl", "%ebx, %eax", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opMul:
-      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
       Load(i->GetSrc(2), "%ebx", "");
       EmitInstruction("imull", "%ebx", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opDiv:
-      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
       Load(i->GetSrc(2), "%ebx", "");
       EmitInstruction("cdq"); // sign-extend for dividend
       EmitInstruction("idivl", "%ebx", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opAnd:
-      Load(i->GetSrc(1), "%al", "");
-      Load(i->GetSrc(2), "%dl", "");
-      EmitInstruction("andb", "%dl, %al", "");
+      Load(i->GetSrc(1), "%al", cmt.str());
+      Load(i->GetSrc(2), "%bl", "");
+      EmitInstruction("andb", "%bl, %al", "");
       Store(i->GetDest(), 'a', "");
       break;
     case opOr:
-      Load(i->GetSrc(1), "%al", "");
-      Load(i->GetSrc(2), "%dl", "");
-      EmitInstruction("orb", "%dl, %al", "");
+      Load(i->GetSrc(1), "%al", cmt.str());
+      Load(i->GetSrc(2), "%bl", "");
+      EmitInstruction("orb", "%bl, %al", "");
       Store(i->GetDest(), 'a', "");
       break;
     // unary operators
     // dst = op src1
     case opNeg:
-      Load(i->GetSrc(1), "%edx", "");
-      EmitInstruction("negl", "%edx", "");
-      Store(i->GetDest(), 'd', "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
+      EmitInstruction("negl", "%eax", "");
+      Store(i->GetDest(), 'a', "");
       break;
     case opPos:
       break; // opPos doesn't need any instruction.
     case opNot:
-      Load(i->GetSrc(1), "%dl", "");
-      EmitInstruction("notb", "%dl", "");
-      Store(i->GetDest(), 'd', "");
+      Load(i->GetSrc(1), "%al", cmt.str());
+      EmitInstruction("notb", "%al", "");
+      Store(i->GetDest(), 'a', "");
       break;
 
     // memory operations
     // dst = src1
     case opAssign:
-      Load(i->GetSrc(1), "%eax", "");
+      Load(i->GetSrc(1), "%eax", cmt.str());
       Store(i->GetDest(), 'a', "");
       break;
 
@@ -456,29 +484,10 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     // dst = &src1
     case opAddress:
       {
-        assert(i->GetSrc(1));
-        const CTacName *_src_var = dynamic_cast<const CTacName*>(i->GetSrc(1));
-        assert(_src_var != NULL);
-
-        const CSymbol *src_sym = _src_var->GetSymbol();
-        if(src_sym->GetSymbolType() == stGlobal)
-        {
-          EmitInstruction("movl", "$"+src_sym->GetName()+", %edx", "");
-          Store(i->GetDest(), 'd', "");
-        }
-        else
-        {
-          stringstream s_stream;
-          string baseReg, offsetImm;
-
-          s_stream << "$"  << src_sym->GetOffset();
-          offsetImm = s_stream.str();
-          baseReg = src_sym->GetBaseRegister();
-          
-          EmitInstruction("movl", "%" + baseReg + ", %edx", ""); // ex) movl %ebp, %edx
-          EmitInstruction("addl", offsetImm + ", %edx", "");     // ex) addl $8, %edx
-          Store(i->GetDest(), 'd', "");
-        }
+        assert(i->GetSrc(1) != NULL);
+        
+        EmitInstruction("leal", Operand(i->GetSrc(1))+", %eax", cmt.str());
+        Store(i->GetDest(), 'a', "");
         break;
       }
     // dst = *src1
@@ -494,7 +503,7 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
         const CTacLabel *goto_lbl = dynamic_cast<const CTacLabel*>(i->GetDest());
         assert(goto_lbl != NULL);
 
-        EmitInstruction("jmp", Label(goto_lbl), "");
+        EmitInstruction("jmp", Label(goto_lbl), cmt.str());
         break;
       }
 
@@ -508,21 +517,21 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     case opBiggerEqual:
       if(OperandSize(i->GetSrc(1)) == 4)
       {
-        Load(i->GetSrc(1), "%edx", "");
-        Load(i->GetSrc(2), "%eax", "");
-        EmitInstruction("cmpl", "%eax, %edx", "");
+        Load(i->GetSrc(1), "%eax", cmt.str());
+        Load(i->GetSrc(2), "%ebx", "");
+        EmitInstruction("cmpl", "%ebx, %eax", "");
       }
       else if (OperandSize(i->GetSrc(1)) == 1)
       {
-        Load(i->GetSrc(1), "%dl", "");
-        Load(i->GetSrc(2), "%al", "");
-        EmitInstruction("cmpb", "%al, %dl", "");
+        Load(i->GetSrc(1), "%al", cmt.str());
+        Load(i->GetSrc(2), "%bl", "");
+        EmitInstruction("cmpb", "%bl, %al", "");
       }
       else // OperandSize(src) == 2
       {
-        Load(i->GetSrc(1), "%dx", "");
-        Load(i->GetSrc(2), "%ax", "");
-        EmitInstruction("cmpw", "%ax, %dx", "");
+        Load(i->GetSrc(1), "%ax", cmt.str());
+        Load(i->GetSrc(2), "%bx", "");
+        EmitInstruction("cmpw", "%bx, %ax", "");
       }
       
       { // Emit conditional jump instrction
@@ -537,26 +546,34 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     case opParam:
       if(OperandSize(i->GetSrc(1)) == 4)
       {
-        Load(i->GetSrc(1), "%edx", "");
-        EmitInstruction("pushl", "%edx", "");
+        Load(i->GetSrc(1), "%eax", cmt.str());
+        EmitInstruction("pushl", "%eax", "");
       }
       else if(OperandSize(i->GetSrc(1)) == 1)
       {
-        Load(i->GetSrc(1), "%dl", "");
-        EmitInstruction("pushb", "%dl", "");
+        Load(i->GetSrc(1), "%al", cmt.str());
+        EmitInstruction("pushb", "%al", "");
       }
       else
       {
-        Load(i->GetSrc(1), "%dx", "");
-        EmitInstruction("pushw", "%dx", "");
+        Load(i->GetSrc(1), "%ax", cmt.str());
+        EmitInstruction("pushw", "%ax", "");
       }
       break;
     case opCall:
       {
         const CTacName* func_name = dynamic_cast<const CTacName*>(i->GetSrc(1));
         assert(func_name != NULL);
+        const CSymProc* func_sym = dynamic_cast<const CSymProc*>(func_name->GetSymbol());
+        assert(func_sym != NULL);
 
-        EmitInstruction("call", func_name->GetSymbol()->GetName(), "");
+        int param_num = func_sym->GetNParams();
+
+        EmitInstruction("call", Operand(i->GetSrc(1)), cmt.str());
+        
+        if(param_num > 0)
+          EmitInstruction("addl", Imm(4*param_num)+", %esp", "");
+        
         if(i->GetDest() != NULL)
           Store(i->GetDest(), 'a', "");
       }
@@ -564,7 +581,7 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     case opReturn:
       if(i->GetSrc(1) != NULL)
         Load(i->GetSrc(1), "%eax", "");
-      EmitInstruction("jmp", Label("exit"), "");
+      EmitInstruction("jmp", Label("exit"), cmt.str());
       break;
 
     // special
@@ -661,7 +678,7 @@ string CBackendx86::Operand(const CTac *op)
 
   // Non-reference handling
   const CSymbol *sym = variable->GetSymbol();
-  if(sym->GetSymbolType() == stGlobal)
+  if(sym->GetSymbolType() == stGlobal || sym->GetSymbolType() == stProcedure)
   {
     operand = sym->GetName();
   }
@@ -670,7 +687,7 @@ string CBackendx86::Operand(const CTac *op)
     stringstream s_stream;
 
     s_stream << sym->GetOffset();
-    s_stream << "(" << "%" << sym->GetBaseRegister() << ")"; // ex) 12(%ebp)
+    s_stream << "(" << sym->GetBaseRegister() << ")"; // ex) 12(%ebp)
     
     operand = s_stream.str();
   }
@@ -766,7 +783,6 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
 
   int size = 0;
   int param_cnt = 0;
-  int prev_local_ofs = local_ofs; // offset of last symbol processed.
 
   assert(local_ofs < 0);
   assert(param_ofs > 0);
@@ -791,7 +807,7 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
       assert(curr_param != NULL);
 
       curr_param->SetOffset(param_ofs + 4 * curr_param->GetIndex()); // Every i-th arguments located in '%ebp + (param_ofs + 4*i)'
-      curr_param->SetBaseRegister("ebp");
+      curr_param->SetBaseRegister("%ebp");
 
       param_cnt++;
     }
@@ -806,11 +822,10 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
         // ex) (-19) % 4 = -3. (=> 4 + ((-19) % 4) = 1)
       }
 
-      (*it)->SetOffset(local_ofs);
-      (*it)->SetBaseRegister("ebp");
+      local_ofs -= (*it)->GetDataType()->GetSize(); 
 
-      prev_local_ofs = local_ofs;
-      local_ofs -= (*it)->GetDataType()->GetSize(); // local_ofs always point the address that the next local variables locates.
+      (*it)->SetOffset(local_ofs);
+      (*it)->SetBaseRegister("%ebp");
     } 
   }
 
@@ -820,13 +835,13 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
     if((*it)->GetSymbolType() == stParam || (*it)->GetSymbolType() == stLocal)
     {
       _out << _ind << "# " << right << setw(6) << (*it)->GetOffset()
-                           << "(%" << (*it)->GetBaseRegister() << ")"
-                           << setw(4) << (*it)->GetDataType()->GetDataSize();
-      (*it)->print(_out, 1);
+                           << "(" << (*it)->GetBaseRegister() << ")"
+                           << setw(4) << (*it)->GetDataType()->GetDataSize() << "  ";
+      (*it)->print(_out, 0);
       _out << endl;
     }
   }
   
-  size = -prev_local_ofs;
+  size = -local_ofs;
   return size;
 }
