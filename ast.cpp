@@ -677,7 +677,7 @@ void CAstStatReturn::toDot(ostream &out, int indent) const
 
 CTacAddr* CAstStatReturn::ToTac(CCodeBlock *cb, CTacLabel *next)
 {
-  CTacAddr* retval = _expr->ToTac(cb);
+  CTacAddr* retval = (_expr == NULL) ? NULL : _expr->ToTac(cb);
 
   cb->AddInstr(new CTacInstr(opReturn, NULL, retval));
 

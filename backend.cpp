@@ -223,21 +223,23 @@ void CBackendx86::EmitScope(CScope *scope)
   EmitInstruction("pushl", "%edi", "");
   EmitInstruction("subl", "$" + o.str() + ", %esp", "make room for locals");  // 4. Generate space on the stack for locals and
                                                                               //    spilled variables by adjusting the stack pointer.
-  _out << endl;
-  if(stack_size > 24)                                                         // 5. Memset local stack area to zero
+
+  if(stack_size > 28)                                                         // 5. Memset local stack area to zero
   {
     int stack_num = (stack_size - 12 + 3) / 4;
 
+    _out << endl;
     EmitInstruction("cld", "", "memset local stack area to 0");
     EmitInstruction("xorl", "%eax, %eax", "");
     EmitInstruction("movl", Imm(stack_num)+", %ecx", "");
     EmitInstruction("movl", "%esp, %edi", "");
     EmitInstruction("rep", "stosl", "");
   }
-  else
+  else if(stack_size > 12)
   {
     int stack_num = (stack_size - 12 + 3) / 4;
-
+  
+    _out << endl;
     EmitInstruction("xorl", "%eax, %eax", "memset local stack area to 0");
     for(int i = stack_num-1; i >= 0; i--)
     {
@@ -351,6 +353,7 @@ void CBackendx86::EmitGlobalData(CScope *scope)
 
 void CBackendx86::EmitLocalData(CScope *scope)
 {
+  // Initialize meta data of local arrays on stack
   assert(scope != NULL);
 
   CSymtab *st = scope->GetSymbolTable();
@@ -376,6 +379,7 @@ void CBackendx86::EmitLocalData(CScope *scope)
         o1 << ofs;
         string s_ofs = o1.str();
 
+        // Initialize dimention  data
         EmitInstruction("movl", Imm(dim)+", "+s_ofs+"("+baseReg+")", "Initialize meta data of "+(*it)->GetName());
 
         for (int d=0; d<dim; d++) 
@@ -386,8 +390,9 @@ void CBackendx86::EmitLocalData(CScope *scope)
           ostringstream o3;
           o3 << ofs;
           s_ofs = o3.str();
-          
-          EmitInstruction("movl", Imm(at->GetNElem())+", "+s_ofs+"(%"+baseReg+")", "");
+    
+          // Initialize element number of this dimension.
+          EmitInstruction("movl", Imm(at->GetNElem())+", "+s_ofs+"("+baseReg+")", "");
 
           at = dynamic_cast<const CArrayType*>(at->GetInnerType());
         }
@@ -515,24 +520,9 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
     case opLessEqual:
     case opBiggerThan:
     case opBiggerEqual:
-      if(OperandSize(i->GetSrc(1)) == 4)
-      {
-        Load(i->GetSrc(1), "%eax", cmt.str());
-        Load(i->GetSrc(2), "%ebx", "");
-        EmitInstruction("cmpl", "%ebx, %eax", "");
-      }
-      else if (OperandSize(i->GetSrc(1)) == 1)
-      {
-        Load(i->GetSrc(1), "%al", cmt.str());
-        Load(i->GetSrc(2), "%bl", "");
-        EmitInstruction("cmpb", "%bl, %al", "");
-      }
-      else // OperandSize(src) == 2
-      {
-        Load(i->GetSrc(1), "%ax", cmt.str());
-        Load(i->GetSrc(2), "%bx", "");
-        EmitInstruction("cmpw", "%bx, %ax", "");
-      }
+      Load(i->GetSrc(1), "%eax", cmt.str());
+      Load(i->GetSrc(2), "%ebx", "");
+      EmitInstruction("cmpl", "%ebx, %eax", "");
       
       { // Emit conditional jump instrction
         CTacLabel *dst_lbl = dynamic_cast<CTacLabel*>(i->GetDest());
@@ -544,21 +534,8 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
 
     // function call-related operations
     case opParam:
-      if(OperandSize(i->GetSrc(1)) == 4)
-      {
-        Load(i->GetSrc(1), "%eax", cmt.str());
-        EmitInstruction("pushl", "%eax", "");
-      }
-      else if(OperandSize(i->GetSrc(1)) == 1)
-      {
-        Load(i->GetSrc(1), "%al", cmt.str());
-        EmitInstruction("pushb", "%al", "");
-      }
-      else
-      {
-        Load(i->GetSrc(1), "%ax", cmt.str());
-        EmitInstruction("pushw", "%ax", "");
-      }
+      Load(i->GetSrc(1), "%eax", cmt.str());
+      EmitInstruction("pushl", "%eax", "");
       break;
     case opCall:
       {
@@ -580,7 +557,10 @@ void CBackendx86::EmitInstruction(CTacInstr *i)
       break;
     case opReturn:
       if(i->GetSrc(1) != NULL)
-        Load(i->GetSrc(1), "%eax", "");
+      {
+        Load(i->GetSrc(1), "%eax", cmt.str());
+        cmt.str("");
+      }
       EmitInstruction("jmp", Label("exit"), cmt.str());
       break;
 
@@ -671,8 +651,8 @@ string CBackendx86::Operand(const CTac *op)
     const CSymbol *sym = ref_var->GetSymbol();
     CTacName *derefed_var = new CTacName(sym);
     
-    operand = "%ebx";
-    Load(derefed_var, operand, "Load address of the reference, to ebx");
+    operand = "(%edi)";
+    Load(derefed_var, "%edi", "");
     return operand;
   }
 
@@ -748,7 +728,7 @@ int CBackendx86::OperandSize(CTac *t) const
     const CSymbol *deref_sym = ref_operand->GetDerefSymbol();
 
     if(deref_sym->GetDataType()->IsArray())
-      size = 4;
+      size = dynamic_cast<const CArrayType*>(deref_sym->GetDataType())->GetBaseType()->GetSize();
     else
       size = deref_sym->GetDataType()->GetSize();
   }
@@ -815,15 +795,14 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
     {
       int align = (*it)->GetDataType()->GetAlign();
       
+      local_ofs -= (*it)->GetDataType()->GetSize(); 
+      
       if(abs(local_ofs) % align != 0)
       {
         local_ofs -= align + (local_ofs % align); // decrese local_ofs by padding size (for alignment)
         // Note: remainder of negative number gives the negated remainder of its absolute value.
         // ex) (-19) % 4 = -3. (=> 4 + ((-19) % 4) = 1)
       }
-
-      local_ofs -= (*it)->GetDataType()->GetSize(); 
-
       (*it)->SetOffset(local_ofs);
       (*it)->SetBaseRegister("%ebp");
     } 
@@ -836,7 +815,7 @@ size_t CBackendx86::ComputeStackOffsets(CSymtab *symtab,
     {
       _out << _ind << "# " << right << setw(6) << (*it)->GetOffset()
                            << "(" << (*it)->GetBaseRegister() << ")"
-                           << setw(4) << (*it)->GetDataType()->GetDataSize() << "  ";
+                           << setw(4) << (*it)->GetDataType()->GetSize() << "  ";
       (*it)->print(_out, 0);
       _out << endl;
     }

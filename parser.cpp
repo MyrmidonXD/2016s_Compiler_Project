@@ -226,6 +226,7 @@ CAstStatement* CParser::statSequence(CAstScope *s)
     do {
       CToken t;
       EToken tt = _scanner->Peek().GetType();
+      if (tt == tKElse || tt == tKEnd) break;
       CAstStatement *st = NULL;
 
       switch (tt) {
