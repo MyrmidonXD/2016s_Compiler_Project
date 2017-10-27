@@ -2,12 +2,12 @@
 
 ## Usage
 
-"`
+```
 $ make snuplc
-$ ./snuplc YOUR_SNUPL_CODE
-$ gcc -m32 YOUR_SNUPL_CODE.s rte/IA32/ARRAY.s rte/IA32/IO.s -o EXECUTABLE_NAME
-$ ./EXECUTABLE_NAME
-"`
+$ ./snuplc YOUR_SNUPL_CODE  
+$ gcc -m32 YOUR_SNUPL_CODE.s rte/IA32/ARRAY.s rte/IA32/IO.s -o EXECUTABLE_NAME  
+$ ./EXECUTABLE_NAME  
+```
 
 ## Caution
 
